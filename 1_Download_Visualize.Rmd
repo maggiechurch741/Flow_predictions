@@ -51,6 +51,12 @@ download.file('https://gdex.ucar.edu/dataset/camels/file/camels_vege.txt',
 
 download.file('https://gdex.ucar.edu/dataset/camels/file/camels_hydro.txt',
               'data/hydro.txt')
+
+
+# Variable definitions
+download.file('https://gdex.ucar.edu/dataset/camels/file/camels_attributes_v2.0.pdf',
+              'data/meta.pdf')
+
 ```
 
 
