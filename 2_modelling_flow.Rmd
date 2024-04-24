@@ -1,0 +1,179 @@
+---
+title: "Modelling Flow"
+author: "Matthew Ross"
+date: "2024-04-24"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+
+library(tidyverse)
+library(corrr)
+library(olsrr)
+library(performance)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Modelling Flow
+
+Now that we have explored individual correlations between long-term flow
+characteristics and potential drivers of those characteristics (climate,
+soils, etc...), we can start to build out increasingly complex models to
+predict flow characteristics.
+
+# Assignment
+
+```{r}
+dat_files <- list.files('data', full.names = T)
+
+climate <- read_delim('data/climate.txt', delim = ';')
+hydro <- read_delim('data/hydro.txt', delim = ';')
+soil <- read_delim('data/soil.txt', delim = ';')
+veg <- read_delim('data/vege.txt', delim = ';')
+topo <- read_delim('data/topo.txt', delim = ';')
+geol <- read_delim('data/geol.txt', delim = ';')
+```
+
+Wrangle data and apply some common transformations. I recognize that
+testing every transformation and combination of variables is a rabbit
+hole best left for RF.
+
+```{r}
+# combine data
+cq <- 
+  hydro %>% 
+  select(q_mean, gauge_id) %>%
+  inner_join(climate) %>%
+  inner_join(soil) %>%
+  inner_join(veg) %>%
+  inner_join(topo) %>%
+  inner_join(geol) %>%
+  select(where(is.numeric), gauge_id) 
+
+# add log transformations
+cq_w_logs <- cq %>% 
+  select(-q_mean) %>%  #Don't transform the response
+  select(where(~all(. >= 0 & !is.na(.)))) %>% #Don't transform cols with neg values 
+  mutate(across(-gauge_id, ~log(.+1))) %>%  #Log-transform everything but gauge_id
+  mutate_all(~replace(., is.infinite(.), NA)) %>% #Convert Inf to NA
+  rename_at(vars(-gauge_id), ~paste0(., '_log')) #Rename everything but gauge_id
+
+# add square transformations
+cq_w_squares <- cq %>% 
+  select(-q_mean) %>%
+  mutate(across(-gauge_id, ~.^2)) %>%  #Square everything but gauge_id
+  rename_at(vars(-gauge_id), ~paste0(., '_squared'))
+
+# combine
+cq_full <- cq %>%
+  inner_join(cq_w_logs) %>%
+  inner_join(cq_w_squares) %>%
+  filter(!is.na(q_mean)) %>% #There's one NA response
+  select(-gauge_id) #This is annoying me 
+```
+
+## Build a parsimonious linear model
+
+Pick one of the flow characteristics that mosts interests you and use
+the `lm` function to build a parsimonious model that predicts your
+favorite characteristic. What is parsimony? It's a model that is complex
+enough to capture the major controls, but simple enough to be
+understandable. You will need to explore, read, understand the
+differences between a + sign interaction, a ":" interaction and a \*
+interaction in `lm` terminology.
+
+Please report your R2, slope estimates, and p-value of your model and
+write out your interpretation of these numbers.
+
+```{r}
+# run the full model
+lm_mod_full <- lm(q_mean ~ ., data=cq_full)
+
+# run stepwise variable selection (vars are selected based on p values until there's none left)
+lm_mod_stepwise <- ols_step_forward_p(lm_mod_full)
+lm_mod_stepwise
+
+# ok this many predictors is unnecessary. Performance gains are really in the top 4 vars.
+
+# run the narrowed-down model
+lm_mod_final <- lm(q_mean ~ p_mean + p_mean_squared + slope_mean + pet_mean_log, 
+                   data=cq_full)
+
+# check assumptions
+check_model(lm_mod_final)
+
+# p_mean and p_mean_squared are correlated... I thought about centered them but decided I didn't know enough about that.
+
+# Also, the residuals don't look normal/the data looks overdispersed. Try weighting the residuals
+resid_mod <- lm(abs(lm_mod_final$residuals) ~ lm_mod_final$fitted.values)
+modweights <- 1 / resid_mod$fitted.values^2
+
+lm_mod_final_weighted <- lm(q_mean ~ p_mean + p_mean_squared + slope_mean + pet_mean_log,
+                    data=cq_full,
+                    weights = modweights)
+
+# eh, this doesn't really help. Forget it
+check_model(lm_mod_final_weighted)
+
+# Every variable seems to contribute to non-normality of residuals, and I haven't found any transformations that help. I'll say phooey and hope RF can solve these problems. But I'll go ahead and interpret the unweighted 4-var model.
+summary(lm_mod_final)
+```
+
+> The adjusted R2 of my model is 93% (that's really good!), with a
+> p-value \< 0.01. All of the variables I included are significant.
+>
+> -   B0: The average flow with no precip, no PET, and a totally flat
+>     landscape is 2mm.
+>
+> -   B1: Mean flow increases by 0.2mm with every additional mm of mean
+>     daily precip.
+>
+> -   B2: Mean flow increases by 0.08mm with every additional 1-unit
+>     increase of mean daily precip squared. *Is this right?*
+>
+> -   B3: Mean flow increases by 0.008mm with every additional m/km of
+>     mean catchment slope.
+>
+> -   B4: A 1% increase in mean daily PET decreases the mean flow by
+>     0.017mm, on average.
+>
+> In plain words: Streamflow is higher where there's more precipitation,
+> a steeper catchment, and less water lost to the atmosphere by
+> evapotranspiration.
+
+## Build a CART model to predict flow.
+
+Linear models help us both predict and understand drivers of change,
+machine learning can help us understand drivers of change, but as a
+technique it is more suited to accurate predictions. CART or
+Classification and Regression Trees are a nice intermediate between lms
+and ml. Tons of resources for this but [CART
+Logic](https://koalaverse.github.io/machine-learning-in-R/decision-trees.html#cart-software-in-r),
+provides a good conceptual overview, and [CART
+demo](https://www.statmethods.net/advstats/cart.html) provides a good
+enough code demo.
+
+Read the logic intro above, and the code demo as well, to build a CART
+model version of your lm. Use the code to visualize your CART output.
+
+```{r}
+
+```
+
+## Build a RandomForest
+
+CARTs are a single tree, what if we had thousands? Would we get better
+performance (yes!)
+
+The same CART logic site above introduces random forests as well. Please
+read this part of the site and use the code demo to build your own
+RandomForest. Remember, for a RandomForest type model we want to make
+sure we split our data at least into train and test datasets and ideally
+into train-test-val.
+
+```{r}
+
+```
