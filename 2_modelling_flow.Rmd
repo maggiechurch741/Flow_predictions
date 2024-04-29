@@ -14,6 +14,9 @@ library(tidyverse)
 library(corrr)
 library(olsrr)
 library(performance)
+library(rpart)
+library(yardstick)
+library(randomForest)
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
@@ -26,7 +29,7 @@ predict flow characteristics.
 
 # Assignment
 
-```{r}
+```{r, warning=F, message=F}
 dat_files <- list.files('data', full.names = T)
 
 climate <- read_delim('data/climate.txt', delim = ';')
@@ -41,7 +44,7 @@ Wrangle data and apply some common transformations. I recognize that
 testing every transformation and combination of variables is a rabbit
 hole best left for RF.
 
-```{r}
+```{r, warning=F, message=F}
 # combine data
 cq <- 
   hydro %>% 
@@ -57,7 +60,7 @@ cq <-
 cq_w_logs <- cq %>% 
   select(-q_mean) %>%  #Don't transform the response
   select(where(~all(. >= 0 & !is.na(.)))) %>% #Don't transform cols with neg values 
-  mutate(across(-gauge_id, ~log(.+1))) %>%  #Log-transform everything but gauge_id
+  mutate(across(-gauge_id, ~log10(.+1))) %>%  #Log-transform everything but gauge_id
   mutate_all(~replace(., is.infinite(.), NA)) %>% #Convert Inf to NA
   rename_at(vars(-gauge_id), ~paste0(., '_log')) #Rename everything but gauge_id
 
@@ -105,7 +108,7 @@ lm_mod_final <- lm(q_mean ~ p_mean + p_mean_squared + slope_mean + pet_mean_log,
 # check assumptions
 check_model(lm_mod_final)
 
-# p_mean and p_mean_squared are correlated... I thought about centered them but decided I didn't know enough about that.
+# p_mean and p_mean_squared are correlated... I thought about centering them but decided I didn't know enough about that.
 
 # Also, the residuals don't look normal/the data looks overdispersed. Try weighting the residuals
 resid_mod <- lm(abs(lm_mod_final$residuals) ~ lm_mod_final$fitted.values)
@@ -126,7 +129,7 @@ summary(lm_mod_final)
 > p-value \< 0.01. All of the variables I included are significant.
 >
 > -   B0: The average flow with no precip, no PET, and a totally flat
->     landscape is 2mm.
+>     landscape is 1.7mm.
 >
 > -   B1: Mean flow increases by 0.2mm with every additional mm of mean
 >     daily precip.
@@ -138,7 +141,7 @@ summary(lm_mod_final)
 >     mean catchment slope.
 >
 > -   B4: A 1% increase in mean daily PET decreases the mean flow by
->     0.017mm, on average.
+>     0.04mm, on average.
 >
 > In plain words: Streamflow is higher where there's more precipitation,
 > a steeper catchment, and less water lost to the atmosphere by
@@ -161,7 +164,39 @@ model version of your lm. Use the code to visualize your CART output.
 
 ```{r}
 
+# let's bin the q_means to start
+cq_binned <- cq_full %>% 
+  mutate(q_mean_bin = cut_number(cq_full$q_mean, n=4)) %>%
+  select(-q_mean)
+
+# 70/30 split 
+train <- sample_frac(cq_binned, 0.7)
+test <- anti_join(cq_binned, train)
+
+# build the tree on the training data
+cart_simple <- rpart(q_mean_bin ~ .,
+                  method="class", 
+                  data=train,
+                  cp=0.01) # this will make a pretty complex model
+
+# plot tree
+plot(cart_simple, uniform=TRUE)
+text(cart_simple, use.n=TRUE, all=TRUE, cex=.8)
+
+# predict over the testing data
+test$pred <- predict(cart_simple, test, 'class')
+
+# evaluate test accuracy
+cm <- conf_mat(data=test, truth=q_mean_bin, estimate=pred)
+
+autoplot(cm, type='heatmap') + 
+  scale_fill_gradient(low='lightblue', high='darkblue')
+
+accuracy(test, q_mean_bin, pred)
 ```
+
+Ooook so testing accuracy is 77%. Not bad! And the errors are pretty
+well-dispersed throughout the classes.
 
 ## Build a RandomForest
 
@@ -175,5 +210,6 @@ sure we split our data at least into train and test datasets and ideally
 into train-test-val.
 
 ```{r}
+
 
 ```
